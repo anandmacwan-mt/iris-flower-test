@@ -6,7 +6,8 @@ import {
   OrbitControls,
   useAnimations,
   useFBO,
-  useGLTF
+  useGLTF,
+  useTexture
 } from '@react-three/drei'
 import { useControls, button } from 'leva'
 import * as THREE from 'three'
@@ -237,6 +238,26 @@ export function App() {
     () => glassControls(PETAL_GLASS_DEFAULTS),
     { collapsed: true, order: 1 }
   )
+  const textureGui = useControls(
+    'texture',
+    {
+      enabled: { value: true, label: 'use texture' },
+      mode: {
+        value: 'colour',
+        options: ['colour', 'emission', 'colour + emission'],
+        label: 'apply as'
+      },
+      emissiveIntensity: {
+        value: 1,
+        min: 0,
+        max: 8,
+        step: 0.01,
+        label: 'emission strength'
+      }
+    },
+    { collapsed: true, order: 2 }
+  )
+
   const [petalRim, setPetalRim] = useControls(
     'rim',
     () => ({
@@ -407,6 +428,7 @@ export function App() {
         />
         <GlassMuse
           glass={{ ...petalMaterial, ...perf }}
+          textureSettings={textureGui}
           breeze={sceneGui.breeze}
           breezeStrength={sceneGui.breezeStrength}
           breezeSpeed={sceneGui.breezeSpeed}
@@ -500,6 +522,7 @@ function FallbackMarker() {
  */
 function GlassMuse({
   glass,
+  textureSettings,
   breeze,
   breezeStrength,
   breezeSpeed,
@@ -510,6 +533,31 @@ function GlassMuse({
 }) {
   const sway = useRef()
   const { scene, animations } = useGLTF('/Iris_animated.glb')
+  const irisTexture = useTexture('/iris_texture.png')
+
+  // Painted against the glTF UV layout — needs glTF texture conventions
+  useMemo(() => {
+    irisTexture.flipY = false
+    irisTexture.colorSpace = THREE.SRGBColorSpace
+    irisTexture.anisotropy = 8
+    irisTexture.needsUpdate = true
+  }, [irisTexture])
+
+  const texProps = useMemo(() => {
+    if (!textureSettings?.enabled) return {}
+    const { mode, emissiveIntensity } = textureSettings
+    const props = {}
+    if (mode === 'colour' || mode === 'colour + emission') props.map = irisTexture
+    if (mode === 'emission' || mode === 'colour + emission') {
+      props.emissiveMap = irisTexture
+      props.emissive = '#ffffff'
+      props.emissiveIntensity = emissiveIntensity
+    }
+    return props
+  }, [textureSettings, irisTexture])
+
+  // Adding/removing map slots needs a shader rebuild — remount MTM on mode change
+  const texKey = textureSettings?.enabled ? textureSettings.mode : 'off'
   // Bind mixer to the scene so bone tracks resolve correctly
   const { actions, mixer, names } = useAnimations(animations, scene)
 
@@ -586,7 +634,7 @@ function GlassMuse({
         <primitive object={scene} />
         {allMeshes.map((mesh) => (
           <Fragment key={mesh.uuid}>
-            <EnvGlassMesh host={mesh} glass={glass} />
+            <EnvGlassMesh key={texKey} host={mesh} glass={glass} texProps={texProps} />
           </Fragment>
         ))}
         <FresnelHalos meshes={allMeshes} rim={petalRim} />
@@ -703,7 +751,7 @@ function createPetalRimMaterial(color, power, strength) {
  * refract siblings (petal↔petal, stem↔petals).
  * FBO defaults to 0.75 × canvas (CSS size × DPR).
  */
-function EnvGlassMesh({ host, glass }) {
+function EnvGlassMesh({ host, glass, texProps = {} }) {
   const canvasSize = useThree((s) => s.size)
   const dpr = useThree((s) => s.viewport.dpr)
   const scale = Math.min(1, Math.max(0.25, Number(glass.fboScale) || 0.75))
@@ -736,6 +784,7 @@ function EnvGlassMesh({ host, glass }) {
     <MeshTransmissionMaterial
       attach="material"
       {...toBareMtmProps(glass)}
+      {...texProps}
       buffer={fbo.texture}
     />,
     host
@@ -743,3 +792,4 @@ function EnvGlassMesh({ host, glass }) {
 }
 
 useGLTF.preload('/Iris_animated.glb')
+useTexture.preload('/iris_texture.png')
