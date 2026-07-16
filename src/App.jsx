@@ -224,7 +224,8 @@ const SCENE_PRESETS = {
       gradient: true,
       style: 'radial',
       inner: '#5326d8',
-      outer: '#2a0e94'
+      outer: '#2a0e94',
+      flow: 0.3
     }
   },
   Blush: {
@@ -265,7 +266,8 @@ const SCENE_PRESETS = {
       gradient: true,
       style: 'radial',
       inner: '#d5a3da',
-      outer: '#c188bd'
+      outer: '#c188bd',
+      flow: 0.25
     }
   }
 }
@@ -365,7 +367,8 @@ export function App() {
       inner: { value: '#5326d8', label: 'inner colour' },
       outer: { value: '#2a0e94', label: 'outer colour' },
       drift: { value: 0.03, min: 0, max: 0.3, step: 0.005, label: 'drift speed' },
-      haze: { value: 0.55, min: 0, max: 1, step: 0.01, label: 'atmosphere' }
+      haze: { value: 0.55, min: 0, max: 1, step: 0.01, label: 'atmosphere' },
+      flow: { value: 0.2, min: 0, max: 1, step: 0.01, label: 'fluid flow' }
     }),
     { collapsed: true, order: 10 }
   )
@@ -540,6 +543,7 @@ export function App() {
           outer={backgroundGui.outer}
           drift={backgroundGui.drift}
           haze={backgroundGui.haze}
+          flow={backgroundGui.flow}
         />
         <RotatingSunsetEnvironment
           blur={sceneGui.envBlur}
@@ -613,7 +617,8 @@ function GradientAtmosphere({
   inner = '#5326d8',
   outer = '#2a0e94',
   drift = 0.03,
-  haze = 0.55
+  haze = 0.55,
+  flow = 0.2
 }) {
   const mat = useRef()
   const res = useRef(new THREE.Vector2(1, 1)).current
@@ -623,6 +628,7 @@ function GradientAtmosphere({
       uTime: { value: 0 },
       uDrift: { value: drift },
       uHaze: { value: haze },
+      uFlow: { value: flow },
       uStyle: { value: 0 },
       uInner: { value: new THREE.Vector3() },
       uOuter: { value: new THREE.Vector3() },
@@ -637,6 +643,7 @@ function GradientAtmosphere({
     mat.current.uniforms.uTime.value = state.clock.elapsedTime
     mat.current.uniforms.uDrift.value = drift
     mat.current.uniforms.uHaze.value = haze
+    mat.current.uniforms.uFlow.value = flow
     mat.current.uniforms.uStyle.value = style === 'radial' ? 1 : 0
     mat.current.uniforms.uInner.value.copy(hexToVec3(inner))
     mat.current.uniforms.uOuter.value.copy(hexToVec3(outer))
@@ -666,10 +673,25 @@ function GradientAtmosphere({
           uniform float uTime;
           uniform float uDrift;
           uniform float uHaze;
+          uniform float uFlow;
           uniform float uStyle;
           uniform vec3 uInner;
           uniform vec3 uOuter;
           uniform vec2 uResolution;
+
+          // sine-feedback fluid field (the classic glslsandbox / media-facade
+          // trick): a few iterations of mutual sine displacement give a slow,
+          // seamless lava-lamp swirl. Returns a bounded uv offset.
+          vec2 flowField(vec2 st, float t) {
+            vec2 p = st * 2.0;
+            for (int i = 1; i < 8; i++) {
+              vec2 np = p + t * 0.02;
+              np.x += 0.6 / float(i) * sin(float(i) * p.y + t + 20.3 * float(i)) + 0.5;
+              np.y += 0.6 / float(i) * sin(float(i) * p.x + t + 0.3 * float(i + 10)) - 0.5;
+              p = np;
+            }
+            return vec2(sin(3.0 * p.x), sin(3.0 * p.y)) * 0.5;
+          }
 
           float hash(vec2 p) {
             return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
@@ -729,6 +751,10 @@ function GradientAtmosphere({
             // drifting fbm warp keeps the smooth gradient alive without a seam
             float n = fbm(st * 3.0 + vec2(uTime * uDrift, uTime * uDrift * 0.7));
             vec2 p = st + (n - 0.5) * 0.03 * uHaze;
+
+            // fluid advection: swirl the gradient through the sine-feedback
+            // field for a slow, living lava-lamp motion
+            p += flowField(st, uTime * (0.2 + uDrift * 4.0)) * 0.12 * uFlow;
 
             vec3 col;
             if (uStyle > 0.5) {
