@@ -258,6 +258,27 @@ export function App() {
     { collapsed: true, order: 2 }
   )
 
+  const pulseGui = useControls(
+    'pulse',
+    {
+      enabled: { value: true, label: 'seed pulse' },
+      speed: { value: 0.45, min: 0.05, max: 3, step: 0.01, label: 'pulse speed' },
+      min: { value: 0.3, min: 0, max: 4, step: 0.01, label: 'glow min' },
+      max: { value: 3.5, min: 0, max: 8, step: 0.01, label: 'glow max' }
+    },
+    { collapsed: true, order: 9 }
+  )
+
+  const backgroundGui = useControls(
+    'background',
+    {
+      gradient: { value: true, label: 'gradient bg' },
+      drift: { value: 0.03, min: 0, max: 0.3, step: 0.005, label: 'drift speed' },
+      haze: { value: 0.55, min: 0, max: 1, step: 0.01, label: 'atmosphere' }
+    },
+    { collapsed: true, order: 10 }
+  )
+
   const [petalRim, setPetalRim] = useControls(
     'rim',
     () => ({
@@ -419,16 +440,23 @@ export function App() {
       <directionalLight position={[6, 4, 2]} intensity={1.35} color="#ffb39a" />
       <directionalLight position={[-4, 2, -3]} intensity={0.55} color="#9aabb8" />
       <Suspense fallback={<FallbackMarker />}>
+        <GradientAtmosphere
+          enabled={backgroundGui.gradient}
+          drift={backgroundGui.drift}
+          haze={backgroundGui.haze}
+        />
         <RotatingSunsetEnvironment
           blur={sceneGui.envBlur}
           speed={sceneGui.envSpeed}
           washColor={sceneGui.background}
           washAmount={sceneGui.wash}
           envIntensity={sceneGui.envIntensity}
+          showSky={!backgroundGui.gradient}
         />
         <GlassMuse
           glass={{ ...petalMaterial, ...perf }}
           textureSettings={textureGui}
+          pulse={pulseGui}
           breeze={sceneGui.breeze}
           breezeStrength={sceneGui.breezeStrength}
           breezeSpeed={sceneGui.breezeSpeed}
@@ -466,12 +494,133 @@ export function App() {
  * lifted with a Starling wash. Stronger env intensity + warm key lights restore
  * the “catching light” feel of a fully visible HDR sky.
  */
+/**
+ * World-anchored gradient dome — indigo field, near-black corner, violet sweep
+ * and a coral hotspot. Blob anchors drift slowly for idle atmosphere; because
+ * the dome is world-space, orbiting the camera parallaxes the whole gradient.
+ * fbm haze + fine grain keep it from banding and give it air.
+ */
+function GradientAtmosphere({ enabled = true, drift = 0.03, haze = 0.55 }) {
+  const mat = useRef()
+  const bg = useTexture('/background.png')
+
+  useMemo(() => {
+    bg.colorSpace = THREE.SRGBColorSpace
+    bg.wrapS = THREE.ClampToEdgeWrapping
+    bg.wrapT = THREE.ClampToEdgeWrapping
+    bg.anisotropy = 8
+    bg.needsUpdate = true
+  }, [bg])
+
+  const uniforms = useMemo(
+    () => ({
+      uTime: { value: 0 },
+      uDrift: { value: drift },
+      uHaze: { value: haze },
+      uMap: { value: bg }
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []
+  )
+
+  useFrame((state) => {
+    if (!mat.current) return
+    mat.current.uniforms.uTime.value = state.clock.elapsedTime
+    mat.current.uniforms.uDrift.value = drift
+    mat.current.uniforms.uHaze.value = haze
+  })
+
+  if (!enabled) return null
+
+  return (
+    <mesh renderOrder={-5} frustumCulled={false}>
+      <sphereGeometry args={[200, 48, 32]} />
+      <shaderMaterial
+        ref={mat}
+        side={THREE.BackSide}
+        depthWrite={false}
+        uniforms={uniforms}
+        vertexShader={/* glsl */ `
+          varying vec3 vWorld;
+          void main() {
+            vWorld = (modelMatrix * vec4(position, 1.0)).xyz;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          }
+        `}
+        fragmentShader={/* glsl */ `
+          uniform float uTime;
+          uniform float uDrift;
+          uniform float uHaze;
+          uniform sampler2D uMap;
+          varying vec3 vWorld;
+
+          float hash(vec3 p) {
+            return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453);
+          }
+          float vnoise(vec3 p) {
+            vec3 i = floor(p), f = fract(p);
+            f = f * f * (3.0 - 2.0 * f);
+            float a = mix(hash(i), hash(i + vec3(1,0,0)), f.x);
+            float b = mix(hash(i + vec3(0,1,0)), hash(i + vec3(1,1,0)), f.x);
+            float c = mix(hash(i + vec3(0,0,1)), hash(i + vec3(1,0,1)), f.x);
+            float d = mix(hash(i + vec3(0,1,1)), hash(i + vec3(1,1,1)), f.x);
+            return mix(mix(a, b, f.y), mix(c, d, f.y), f.z);
+          }
+          float fbm(vec3 p) {
+            float s = 0.0, amp = 0.5;
+            for (int i = 0; i < 3; i++) { s += amp * vnoise(p); p *= 2.1; amp *= 0.5; }
+            return s;
+          }
+
+          // FocusPortal captures linear then applies ACES + sRGB encode.
+          // Push the sampled colours through the inverse so the design's hex
+          // values survive the pipeline.
+          vec3 acesInverse(vec3 y) {
+            y = min(y, vec3(0.985));
+            vec3 a = 2.51 - 2.43 * y;
+            vec3 b = 0.03 - 0.59 * y;
+            vec3 c = -0.14 * y;
+            return (-b + sqrt(b * b - 4.0 * a * c)) / (2.0 * a);
+          }
+
+          // Angular span of the backdrop image on the dome: the default 45deg
+          // camera sees most of it; orbiting pans across the rest.
+          const float SPAN_U = 1.396; // 80deg
+          const float SPAN_V = 0.785; // 45deg
+
+          void main() {
+            vec3 d = normalize(vWorld);
+            float az = atan(d.x, -d.z);
+            float el = asin(clamp(d.y, -1.0, 1.0));
+
+            vec2 uv = vec2(az / SPAN_U + 0.5, el / SPAN_V + 0.5);
+            uv.x += uTime * uDrift * 0.03;
+
+            // soft atmospheric shimmer: warp the lookup a touch with drifting fbm
+            float n = fbm(d * 3.0 + vec3(0.0, uTime * 0.02, uTime * 0.013));
+            uv += (n - 0.5) * 0.02 * uHaze;
+
+            vec3 col = texture2D(uMap, clamp(uv, 0.0, 1.0)).rgb;
+            col *= 1.0 + (n - 0.5) * 0.14 * uHaze;
+            col = acesInverse(col);
+
+            col += (hash(vec3(gl_FragCoord.xy, fract(uTime))) - 0.5) * 0.012;
+
+            gl_FragColor = vec4(col, 1.0);
+          }
+        `}
+      />
+    </mesh>
+  )
+}
+
 function RotatingSunsetEnvironment({
   blur = 0.55,
   speed = 0.08,
   washColor = '#FCFCF2',
   washAmount = 0.28,
-  envIntensity = 1.55
+  envIntensity = 1.55,
+  showSky = true
 }) {
   const scene = useThree((s) => s.scene)
   const wash = useRef()
@@ -486,22 +635,24 @@ function RotatingSunsetEnvironment({
     <>
       <Environment
         files="/syferfontein_0d_clear_puresky_1k.hdr"
-        background
+        background={showSky}
         blur={blur}
         environmentIntensity={envIntensity}
         backgroundIntensity={1}
       />
-      <mesh ref={wash} scale={[-1, 1, 1]} renderOrder={-10}>
-        <sphereGeometry args={[90, 64, 32]} />
-        <meshBasicMaterial
-          color={washColor}
-          transparent
-          opacity={washAmount}
-          depthWrite={false}
-          side={THREE.BackSide}
-          toneMapped={false}
-        />
-      </mesh>
+      {showSky && (
+        <mesh ref={wash} scale={[-1, 1, 1]} renderOrder={-10}>
+          <sphereGeometry args={[90, 64, 32]} />
+          <meshBasicMaterial
+            color={washColor}
+            transparent
+            opacity={washAmount}
+            depthWrite={false}
+            side={THREE.BackSide}
+            toneMapped={false}
+          />
+        </mesh>
+      )}
     </>
   )
 }
@@ -523,6 +674,7 @@ function FallbackMarker() {
 function GlassMuse({
   glass,
   textureSettings,
+  pulse,
   breeze,
   breezeStrength,
   breezeSpeed,
@@ -556,8 +708,21 @@ function GlassMuse({
     return props
   }, [textureSettings, irisTexture])
 
+  // Pulsing meshes always carry the emissive slot so the glow can animate
+  // even in plain colour mode
+  const pulseTexProps = useMemo(() => {
+    if (!pulse?.enabled) return texProps
+    return {
+      ...texProps,
+      emissiveMap: irisTexture,
+      emissive: '#ffffff',
+      emissiveIntensity: pulse.min
+    }
+  }, [texProps, pulse, irisTexture])
+
   // Adding/removing map slots needs a shader rebuild — remount MTM on mode change
   const texKey = textureSettings?.enabled ? textureSettings.mode : 'off'
+  const pulseKey = pulse?.enabled ? `${texKey}-pulse` : texKey
   // Bind mixer to the scene so bone tracks resolve correctly
   const { actions, mixer, names } = useAnimations(animations, scene)
 
@@ -632,11 +797,22 @@ function GlassMuse({
     <group scale={modelScale} position={[0, y, 0]} rotation={[0, Math.PI / 4, 0]}>
       <group ref={sway}>
         <primitive object={scene} />
-        {allMeshes.map((mesh) => (
-          <Fragment key={mesh.uuid}>
-            <EnvGlassMesh key={texKey} host={mesh} glass={glass} texProps={texProps} />
-          </Fragment>
-        ))}
+        {allMeshes.map((mesh, i) => {
+          // The seed pods in the flower centre (FlowerYellow) breathe with an
+          // emissive pulse; petals stay as they are
+          const pulses = pulse?.enabled && /^FlowerYellow/i.test(mesh.name)
+          return (
+            <Fragment key={mesh.uuid}>
+              <EnvGlassMesh
+                key={pulses ? pulseKey : texKey}
+                host={mesh}
+                glass={glass}
+                texProps={pulses ? pulseTexProps : texProps}
+                pulse={pulses ? { ...pulse, phase: i * 0.7 } : null}
+              />
+            </Fragment>
+          )
+        })}
         <FresnelHalos meshes={allMeshes} rim={petalRim} />
       </group>
     </group>
@@ -751,13 +927,21 @@ function createPetalRimMaterial(color, power, strength) {
  * refract siblings (petal↔petal, stem↔petals).
  * FBO defaults to 0.75 × canvas (CSS size × DPR).
  */
-function EnvGlassMesh({ host, glass, texProps = {} }) {
+function EnvGlassMesh({ host, glass, texProps = {}, pulse = null }) {
   const canvasSize = useThree((s) => s.size)
   const dpr = useThree((s) => s.viewport.dpr)
   const scale = Math.min(1, Math.max(0.25, Number(glass.fboScale) || 0.75))
   const width = Math.max(64, Math.floor(canvasSize.width * dpr * scale))
   const height = Math.max(64, Math.floor(canvasSize.height * dpr * scale))
   const fbo = useFBO(width, height)
+  const matRef = useRef()
+
+  useFrame((state) => {
+    if (!pulse?.enabled || !matRef.current) return
+    const t = state.clock.elapsedTime
+    const s = 0.5 + 0.5 * Math.sin(t * pulse.speed * Math.PI * 2 + (pulse.phase || 0))
+    matRef.current.emissiveIntensity = pulse.min + (pulse.max - pulse.min) * s
+  })
 
   useFrame(({ gl, scene, camera }) => {
     const prevTarget = gl.getRenderTarget()
@@ -782,6 +966,7 @@ function EnvGlassMesh({ host, glass, texProps = {} }) {
 
   return createPortal(
     <MeshTransmissionMaterial
+      ref={matRef}
       attach="material"
       {...toBareMtmProps(glass)}
       {...texProps}
@@ -793,3 +978,4 @@ function EnvGlassMesh({ host, glass, texProps = {} }) {
 
 useGLTF.preload('/Iris_animated.glb')
 useTexture.preload('/iris_texture.png')
+useTexture.preload('/background.png')
