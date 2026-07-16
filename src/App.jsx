@@ -502,22 +502,14 @@ export function App() {
  */
 function GradientAtmosphere({ enabled = true, drift = 0.03, haze = 0.55 }) {
   const mat = useRef()
-  const bg = useTexture('/background.png')
-
-  useMemo(() => {
-    bg.colorSpace = THREE.SRGBColorSpace
-    bg.wrapS = THREE.ClampToEdgeWrapping
-    bg.wrapT = THREE.ClampToEdgeWrapping
-    bg.anisotropy = 8
-    bg.needsUpdate = true
-  }, [bg])
+  const res = useRef(new THREE.Vector2(1, 1)).current
 
   const uniforms = useMemo(
     () => ({
       uTime: { value: 0 },
       uDrift: { value: drift },
       uHaze: { value: haze },
-      uMap: { value: bg }
+      uResolution: { value: new THREE.Vector2(1, 1) }
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     []
@@ -528,22 +520,25 @@ function GradientAtmosphere({ enabled = true, drift = 0.03, haze = 0.55 }) {
     mat.current.uniforms.uTime.value = state.clock.elapsedTime
     mat.current.uniforms.uDrift.value = drift
     mat.current.uniforms.uHaze.value = haze
+    state.gl.getDrawingBufferSize(res)
+    mat.current.uniforms.uResolution.value.copy(res)
   })
 
   if (!enabled) return null
 
+  // The gradient is evaluated procedurally in screen space, so it is
+  // inherently seamless — no texture edges or dome-mapping seams. The huge
+  // dome only exists to fill every pixel behind the scene.
   return (
     <mesh renderOrder={-5} frustumCulled={false}>
-      <sphereGeometry args={[200, 48, 32]} />
+      <sphereGeometry args={[200, 16, 12]} />
       <shaderMaterial
         ref={mat}
         side={THREE.BackSide}
         depthWrite={false}
         uniforms={uniforms}
         vertexShader={/* glsl */ `
-          varying vec3 vWorld;
           void main() {
-            vWorld = (modelMatrix * vec4(position, 1.0)).xyz;
             gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
           }
         `}
@@ -551,30 +546,29 @@ function GradientAtmosphere({ enabled = true, drift = 0.03, haze = 0.55 }) {
           uniform float uTime;
           uniform float uDrift;
           uniform float uHaze;
-          uniform sampler2D uMap;
-          varying vec3 vWorld;
+          uniform vec2 uResolution;
 
-          float hash(vec3 p) {
-            return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453);
+          float hash(vec2 p) {
+            return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
           }
-          float vnoise(vec3 p) {
-            vec3 i = floor(p), f = fract(p);
+          float vnoise(vec2 p) {
+            vec2 i = floor(p), f = fract(p);
             f = f * f * (3.0 - 2.0 * f);
-            float a = mix(hash(i), hash(i + vec3(1,0,0)), f.x);
-            float b = mix(hash(i + vec3(0,1,0)), hash(i + vec3(1,1,0)), f.x);
-            float c = mix(hash(i + vec3(0,0,1)), hash(i + vec3(1,0,1)), f.x);
-            float d = mix(hash(i + vec3(0,1,1)), hash(i + vec3(1,1,1)), f.x);
-            return mix(mix(a, b, f.y), mix(c, d, f.y), f.z);
+            float a = hash(i);
+            float b = hash(i + vec2(1.0, 0.0));
+            float c = hash(i + vec2(0.0, 1.0));
+            float d = hash(i + vec2(1.0, 1.0));
+            return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
           }
-          float fbm(vec3 p) {
+          float fbm(vec2 p) {
             float s = 0.0, amp = 0.5;
-            for (int i = 0; i < 3; i++) { s += amp * vnoise(p); p *= 2.1; amp *= 0.5; }
+            for (int i = 0; i < 4; i++) { s += amp * vnoise(p); p *= 2.03; amp *= 0.5; }
             return s;
           }
 
           // FocusPortal captures linear then applies ACES + sRGB encode.
-          // Push the sampled colours through the inverse so the design's hex
-          // values survive the pipeline.
+          // Push the colours through the inverse so the design's hex values
+          // survive the pipeline.
           vec3 acesInverse(vec3 y) {
             y = min(y, vec3(0.985));
             vec3 a = 2.51 - 2.43 * y;
@@ -583,28 +577,38 @@ function GradientAtmosphere({ enabled = true, drift = 0.03, haze = 0.55 }) {
             return (-b + sqrt(b * b - 4.0 * a * c)) / (2.0 * a);
           }
 
-          // Angular span of the backdrop image on the dome: the default 45deg
-          // camera sees most of it; orbiting pans across the rest.
-          const float SPAN_U = 1.396; // 80deg
-          const float SPAN_V = 0.785; // 45deg
+          // radial-gradient(124.55% 105.64% at 15.32% 29.2%,
+          //   #000 0%, #190B75 40%, #60F 75%, #FF787C 100%)
+          vec3 gradient(float t) {
+            t = clamp(t, 0.0, 1.0);
+            vec3 c0 = vec3(0.0);
+            vec3 c1 = vec3( 25.0,  11.0, 117.0) / 255.0;
+            vec3 c2 = vec3(102.0,   0.0, 255.0) / 255.0;
+            vec3 c3 = vec3(255.0, 120.0, 124.0) / 255.0;
+            vec3 col = c0;
+            col = mix(col, c1, clamp(t / 0.40, 0.0, 1.0));
+            col = mix(col, c2, clamp((t - 0.40) / 0.35, 0.0, 1.0));
+            col = mix(col, c3, clamp((t - 0.75) / 0.25, 0.0, 1.0));
+            return col;
+          }
 
           void main() {
-            vec3 d = normalize(vWorld);
-            float az = atan(d.x, -d.z);
-            float el = asin(clamp(d.y, -1.0, 1.0));
+            // CSS-style coords: origin top-left, per-axis percentages
+            vec2 st = gl_FragCoord.xy / uResolution;
+            st.y = 1.0 - st.y;
 
-            vec2 uv = vec2(az / SPAN_U + 0.5, el / SPAN_V + 0.5);
-            uv.x += uTime * uDrift * 0.03;
+            // drifting fbm warp keeps the smooth gradient alive without a seam
+            float n = fbm(st * 3.0 + vec2(uTime * uDrift, uTime * uDrift * 0.7));
+            vec2 p = st + (n - 0.5) * 0.03 * uHaze;
 
-            // soft atmospheric shimmer: warp the lookup a touch with drifting fbm
-            float n = fbm(d * 3.0 + vec3(0.0, uTime * 0.02, uTime * 0.013));
-            uv += (n - 0.5) * 0.02 * uHaze;
+            vec2 c = vec2(0.1532, 0.292);   // gradient centre
+            vec2 r = vec2(1.2455, 1.0564);  // ellipse radii (fraction of axis)
+            float t = length((p - c) / r);
 
-            vec3 col = texture2D(uMap, clamp(uv, 0.0, 1.0)).rgb;
-            col *= 1.0 + (n - 0.5) * 0.14 * uHaze;
+            vec3 col = gradient(t);
+            col *= 1.0 + (n - 0.5) * 0.10 * uHaze;   // gentle atmospheric shimmer
             col = acesInverse(col);
-
-            col += (hash(vec3(gl_FragCoord.xy, fract(uTime))) - 0.5) * 0.012;
+            col += (hash(gl_FragCoord.xy + fract(uTime)) - 0.5) * 0.012; // anti-band grain
 
             gl_FragColor = vec4(col, 1.0);
           }
@@ -978,4 +982,3 @@ function EnvGlassMesh({ host, glass, texProps = {}, pulse = null }) {
 
 useGLTF.preload('/Iris_animated.glb')
 useTexture.preload('/iris_texture.png')
-useTexture.preload('/background.png')
