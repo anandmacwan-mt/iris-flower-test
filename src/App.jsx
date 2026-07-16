@@ -23,7 +23,7 @@ const NOOMO_DEFAULTS = {
   reflectivity: 0.08,
   roughness: 0.2,
   anisotropy: 0,
-  chromaticAberration: 0.04,
+  chromaticAberration: 0,
   distortion: 0,
   temporalDistortion: 0,
   anisotropicBlur: 0,
@@ -46,7 +46,7 @@ const SCENE_PRESETS = {
       reflectivity: 0.2,
       roughness: 0.2,
       color: '#c2d6ff',
-      chromaticAberration: 0.04,
+      chromaticAberration: 0,
       distortion: 0,
       anisotropicBlur: 0
     },
@@ -75,7 +75,7 @@ const SCENE_PRESETS = {
       reflectivity: 0.08,
       roughness: 0.2,
       color: '#f7cfff',
-      chromaticAberration: 0.04,
+      chromaticAberration: 0,
       distortion: 0,
       anisotropicBlur: 0
     },
@@ -104,7 +104,7 @@ const SCENE_PRESETS = {
       reflectivity: 0.08,
       roughness: 0.2,
       color: '#e8f4ff',
-      chromaticAberration: 0.04,
+      chromaticAberration: 0,
       distortion: 0,
       anisotropicBlur: 0
     },
@@ -133,7 +133,7 @@ const SCENE_PRESETS = {
       reflectivity: 0.08,
       roughness: 0.2,
       color: '#d2b4f0',
-      chromaticAberration: 0.04,
+      chromaticAberration: 0,
       distortion: 0,
       anisotropicBlur: 0
     },
@@ -162,7 +162,7 @@ const SCENE_PRESETS = {
       reflectivity: 0.2,
       roughness: 0.2,
       color: '#b7b7b7',
-      chromaticAberration: 0.04,
+      chromaticAberration: 0,
       distortion: 0,
       anisotropicBlur: 0
     },
