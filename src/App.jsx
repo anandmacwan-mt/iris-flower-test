@@ -184,6 +184,89 @@ const SCENE_PRESETS = {
       envBlur: 0.46,
       envIntensity: 1.01
     }
+  },
+  /* Blender-render looks: sheer alpha'd petals over a soft radial vignette */
+  Bloom: {
+    petalGlass: {
+      thickness: 0.4,
+      reflectivity: 0.12,
+      roughness: 0.28,
+      color: '#cbb4ff',
+      chromaticAberration: 0,
+      distortion: 0,
+      anisotropicBlur: 0
+    },
+    petalRim: {
+      enabled: true,
+      colorSource: 'highlight',
+      power: 2.4,
+      strength: 1.1
+    },
+    xray: {
+      wash: '#e8dff5',
+      ink: '#2a1f6e',
+      accent: '#7c5cbf',
+      highlight: '#f2e9ff'
+    },
+    scene: {
+      background: '#3a18b0',
+      wash: 0.3,
+      envBlur: 0.5,
+      envIntensity: 1.2
+    },
+    texture: {
+      enabled: true,
+      mode: 'colour + emission',
+      emissiveIntensity: 0.5,
+      useAlpha: true
+    },
+    background: {
+      gradient: true,
+      style: 'radial',
+      inner: '#5326d8',
+      outer: '#2a0e94'
+    }
+  },
+  Blush: {
+    petalGlass: {
+      thickness: 0.35,
+      reflectivity: 0.1,
+      roughness: 0.3,
+      color: '#eadcff',
+      chromaticAberration: 0,
+      distortion: 0,
+      anisotropicBlur: 0
+    },
+    petalRim: {
+      enabled: true,
+      colorSource: 'highlight',
+      power: 2.8,
+      strength: 0.9
+    },
+    xray: {
+      wash: '#ffffff',
+      ink: '#4a2bb5',
+      accent: '#b87fc4',
+      highlight: '#ffffff'
+    },
+    scene: {
+      background: '#cf9ed2',
+      wash: 0.3,
+      envBlur: 0.6,
+      envIntensity: 1.5
+    },
+    texture: {
+      enabled: true,
+      mode: 'colour + emission',
+      emissiveIntensity: 0.35,
+      useAlpha: true
+    },
+    background: {
+      gradient: true,
+      style: 'radial',
+      inner: '#d5a3da',
+      outer: '#c188bd'
+    }
   }
 }
 
@@ -238,9 +321,9 @@ export function App() {
     () => glassControls(PETAL_GLASS_DEFAULTS),
     { collapsed: true, order: 1 }
   )
-  const textureGui = useControls(
+  const [textureGui, setTexture] = useControls(
     'texture',
-    {
+    () => ({
       enabled: { value: true, label: 'use texture' },
       mode: {
         value: 'colour',
@@ -253,8 +336,9 @@ export function App() {
         max: 8,
         step: 0.01,
         label: 'emission strength'
-      }
-    },
+      },
+      useAlpha: { value: true, label: 'texture alpha' }
+    }),
     { collapsed: true, order: 2 }
   )
 
@@ -269,13 +353,20 @@ export function App() {
     { collapsed: true, order: 9 }
   )
 
-  const backgroundGui = useControls(
+  const [backgroundGui, setBackground] = useControls(
     'background',
-    {
+    () => ({
       gradient: { value: true, label: 'gradient bg' },
+      style: {
+        value: 'design',
+        options: ['design', 'radial'],
+        label: 'gradient style'
+      },
+      inner: { value: '#5326d8', label: 'inner colour' },
+      outer: { value: '#2a0e94', label: 'outer colour' },
       drift: { value: 0.03, min: 0, max: 0.3, step: 0.005, label: 'drift speed' },
       haze: { value: 0.55, min: 0, max: 1, step: 0.01, label: 'atmosphere' }
-    },
+    }),
     { collapsed: true, order: 10 }
   )
 
@@ -374,6 +465,8 @@ export function App() {
     setScene(preset.scene)
     // Always replace xray colours so IRIS customs don't linger on Indigo / Light
     if (preset.xray) setInk(preset.xray)
+    if (preset.texture) setTexture(preset.texture)
+    if (preset.background) setBackground(preset.background)
     queueMicrotask(() => {
       applyingPreset.current = false
     })
@@ -442,6 +535,9 @@ export function App() {
       <Suspense fallback={<FallbackMarker />}>
         <GradientAtmosphere
           enabled={backgroundGui.gradient}
+          style={backgroundGui.style}
+          inner={backgroundGui.inner}
+          outer={backgroundGui.outer}
           drift={backgroundGui.drift}
           haze={backgroundGui.haze}
         />
@@ -500,7 +596,25 @@ export function App() {
  * the dome is world-space, orbiting the camera parallaxes the whole gradient.
  * fbm haze + fine grain keep it from banding and give it air.
  */
-function GradientAtmosphere({ enabled = true, drift = 0.03, haze = 0.55 }) {
+/** hex -> raw display-space vec3 (the shader handles ACES compensation
+ * itself, so bypass THREE.Color's colour management) */
+function hexToVec3(hex) {
+  const n = parseInt(hex.slice(1), 16)
+  return new THREE.Vector3(
+    ((n >> 16) & 255) / 255,
+    ((n >> 8) & 255) / 255,
+    (n & 255) / 255
+  )
+}
+
+function GradientAtmosphere({
+  enabled = true,
+  style = 'design',
+  inner = '#5326d8',
+  outer = '#2a0e94',
+  drift = 0.03,
+  haze = 0.55
+}) {
   const mat = useRef()
   const res = useRef(new THREE.Vector2(1, 1)).current
 
@@ -509,6 +623,9 @@ function GradientAtmosphere({ enabled = true, drift = 0.03, haze = 0.55 }) {
       uTime: { value: 0 },
       uDrift: { value: drift },
       uHaze: { value: haze },
+      uStyle: { value: 0 },
+      uInner: { value: new THREE.Vector3() },
+      uOuter: { value: new THREE.Vector3() },
       uResolution: { value: new THREE.Vector2(1, 1) }
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -520,6 +637,9 @@ function GradientAtmosphere({ enabled = true, drift = 0.03, haze = 0.55 }) {
     mat.current.uniforms.uTime.value = state.clock.elapsedTime
     mat.current.uniforms.uDrift.value = drift
     mat.current.uniforms.uHaze.value = haze
+    mat.current.uniforms.uStyle.value = style === 'radial' ? 1 : 0
+    mat.current.uniforms.uInner.value.copy(hexToVec3(inner))
+    mat.current.uniforms.uOuter.value.copy(hexToVec3(outer))
     state.gl.getDrawingBufferSize(res)
     mat.current.uniforms.uResolution.value.copy(res)
   })
@@ -546,6 +666,9 @@ function GradientAtmosphere({ enabled = true, drift = 0.03, haze = 0.55 }) {
           uniform float uTime;
           uniform float uDrift;
           uniform float uHaze;
+          uniform float uStyle;
+          uniform vec3 uInner;
+          uniform vec3 uOuter;
           uniform vec2 uResolution;
 
           float hash(vec2 p) {
@@ -566,9 +689,15 @@ function GradientAtmosphere({ enabled = true, drift = 0.03, haze = 0.55 }) {
             return s;
           }
 
-          // FocusPortal captures linear then applies ACES + sRGB encode.
-          // Push the colours through the inverse so the design's hex values
-          // survive the pipeline.
+          // FocusPortal captures linear then displays linearToSRGB(ACES(x)).
+          // To make hex value H land on screen: x = acesInverse(srgbToLinear(H)).
+          vec3 srgbToLinear(vec3 c) {
+            return mix(
+              pow((c + 0.055) / 1.055, vec3(2.4)),
+              c / 12.92,
+              vec3(lessThanEqual(c, vec3(0.04045)))
+            );
+          }
           vec3 acesInverse(vec3 y) {
             y = min(y, vec3(0.985));
             vec3 a = 2.51 - 2.43 * y;
@@ -601,13 +730,19 @@ function GradientAtmosphere({ enabled = true, drift = 0.03, haze = 0.55 }) {
             float n = fbm(st * 3.0 + vec2(uTime * uDrift, uTime * uDrift * 0.7));
             vec2 p = st + (n - 0.5) * 0.03 * uHaze;
 
-            vec2 c = vec2(0.1532, 0.292);   // gradient centre
-            vec2 r = vec2(1.2455, 1.0564);  // ellipse radii (fraction of axis)
-            float t = length((p - c) / r);
-
-            vec3 col = gradient(t);
+            vec3 col;
+            if (uStyle > 0.5) {
+              // soft two-colour radial vignette (Blender-render style):
+              // bright centre falling off to the corners
+              float t = length((p - vec2(0.5, 0.45)) * vec2(1.15, 1.0));
+              col = mix(uInner, uOuter, smoothstep(0.12, 0.85, t));
+            } else {
+              vec2 c = vec2(0.1532, 0.292);   // gradient centre
+              vec2 r = vec2(1.2455, 1.0564);  // ellipse radii (fraction of axis)
+              col = gradient(length((p - c) / r));
+            }
             col *= 1.0 + (n - 0.5) * 0.10 * uHaze;   // gentle atmospheric shimmer
-            col = acesInverse(col);
+            col = acesInverse(srgbToLinear(col));
             col += (hash(gl_FragCoord.xy + fract(uTime)) - 0.5) * 0.012; // anti-band grain
 
             gl_FragColor = vec4(col, 1.0);
@@ -701,13 +836,19 @@ function GlassMuse({
 
   const texProps = useMemo(() => {
     if (!textureSettings?.enabled) return {}
-    const { mode, emissiveIntensity } = textureSettings
+    const { mode, emissiveIntensity, useAlpha } = textureSettings
     const props = {}
     if (mode === 'colour' || mode === 'colour + emission') props.map = irisTexture
     if (mode === 'emission' || mode === 'colour + emission') {
       props.emissiveMap = irisTexture
       props.emissive = '#ffffff'
       props.emissiveIntensity = emissiveIntensity
+    }
+    // the texture's alpha channel is a designed translucency map: sheer
+    // petal interiors, denser edges/line art, solid leaves and seed pods
+    if (useAlpha && props.map) {
+      props.transparent = true
+      props.alphaTest = 0.02
     }
     return props
   }, [textureSettings, irisTexture])
@@ -725,7 +866,9 @@ function GlassMuse({
   }, [texProps, pulse, irisTexture])
 
   // Adding/removing map slots needs a shader rebuild — remount MTM on mode change
-  const texKey = textureSettings?.enabled ? textureSettings.mode : 'off'
+  const texKey = textureSettings?.enabled
+    ? `${textureSettings.mode}${textureSettings.useAlpha ? '-a' : ''}`
+    : 'off'
   const pulseKey = pulse?.enabled ? `${texKey}-pulse` : texKey
   // Bind mixer to the scene so bone tracks resolve correctly
   const { actions, mixer, names } = useAnimations(animations, scene)
